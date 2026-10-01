@@ -1,5 +1,6 @@
 package com.ender.takehome.exception
 
+import com.ender.takehome.billing.InvalidWebhookException
 import com.ender.takehome.billing.PaymentGatewayException
 import org.slf4j.LoggerFactory
 import org.springframework.http.HttpStatus
@@ -54,6 +55,14 @@ class GlobalExceptionHandler {
         log.error("Payment processor error", ex)
         return ResponseEntity.status(HttpStatus.BAD_GATEWAY).body(
             ErrorResponse(502, "Bad Gateway", "Payment processor is unavailable, please try again")
+        )
+    }
+
+    @ExceptionHandler(InvalidWebhookException::class)
+    fun handleInvalidWebhook(ex: InvalidWebhookException): ResponseEntity<ErrorResponse> {
+        log.warn("Rejected webhook: ${ex.message}")
+        return ResponseEntity.badRequest().body(
+            ErrorResponse(400, "Bad Request", ex.message ?: "Invalid webhook")
         )
     }
 }

@@ -3,6 +3,7 @@ package com.ender.takehome.ledger
 import com.ender.takehome.TestFixtures
 import com.ender.takehome.billing.CardModule
 import com.ender.takehome.billing.GatewayChargeResult
+import com.ender.takehome.billing.GatewayEvent
 import com.ender.takehome.billing.PaymentGateway
 import com.ender.takehome.billing.PaymentGatewayException
 import com.ender.takehome.config.TransactionHelper
@@ -63,6 +64,9 @@ class LedgerModuleTest {
             firstArg<Payment>().copy(id = paymentId).also { payments[paymentId] = it }
         }
         every { dataAccess.findPaymentById(any()) } answers { payments[firstArg()] }
+        every { dataAccess.findPaymentByStripePaymentIntentId(any()) } answers {
+            payments.values.find { it.stripePaymentIntentId == firstArg() }
+        }
         every { dataAccess.setStripePaymentIntentId(any(), any()) } answers {
             payments.computeIfPresent(firstArg()) { _, p -> p.copy(stripePaymentIntentId = secondArg()) }
         }
@@ -232,5 +236,73 @@ class LedgerModuleTest {
         every { gateway.chargeCard(any()) } returns GatewayChargeResult("pi_1", PaymentStatus.SUCCEEDED)
 
         assertEquals(PaymentStatus.SUCCEEDED, module.payWithCard(tenantId, rentCharge.id, card.id, "tenant@test.com").status)
+    }
+
+    // --- applyGatewayEvent (webhooks) ---
+
+    private fun storedCardPayment(status: PaymentStatus, stripePaymentIntentId: String? = "pi_1") =
+        Payment(
+            id = paymentId,
+            rentChargeId = rentCharge.id,
+            amount = rentCharge.amount,
+            paymentMethod = PaymentMethod.CARD,
+            status = status,
+            recordedBy = "tenant@test.com",
+            paymentCardId = card.id,
+            stripePaymentIntentId = stripePaymentIntentId,
+        ).also { payments[it.id] = it }
+
+    private fun event(status: PaymentStatus, paymentIntentId: String = "pi_1", paymentId: Long? = null) =
+        GatewayEvent(eventId = "evt_1", paymentIntentId = paymentIntentId, paymentId = paymentId, status = status)
+
+    @Test
+    fun `succeeded webhook completes an initiated payment and marks the charge paid`() {
+        storedCardPayment(PaymentStatus.INITIATED)
+
+        assertTrue(module.applyGatewayEvent(event(PaymentStatus.SUCCEEDED)))
+
+        assertEquals(PaymentStatus.SUCCEEDED, payments[paymentId]!!.status)
+        verify(exactly = 1) { dataAccess.saveCharge(match { it.status == RentChargeStatus.PAID }) }
+    }
+
+    @Test
+    fun `duplicate webhook is a no-op`() {
+        storedCardPayment(PaymentStatus.SUCCEEDED)
+
+        assertFalse(module.applyGatewayEvent(event(PaymentStatus.SUCCEEDED)))
+        verify(exactly = 0) { dataAccess.saveCharge(any()) }
+    }
+
+    @Test
+    fun `out-of-order failed webhook does not undo a success`() {
+        storedCardPayment(PaymentStatus.SUCCEEDED)
+
+        assertFalse(module.applyGatewayEvent(event(PaymentStatus.FAILED)))
+        assertEquals(PaymentStatus.SUCCEEDED, payments[paymentId]!!.status)
+    }
+
+    @Test
+    fun `refund webhook marks the payment refunded and reopens the charge`() {
+        storedCardPayment(PaymentStatus.SUCCEEDED)
+
+        assertTrue(module.applyGatewayEvent(event(PaymentStatus.REFUNDED)))
+
+        assertEquals(PaymentStatus.REFUNDED, payments[paymentId]!!.status)
+        verify(exactly = 1) { dataAccess.saveCharge(match { it.status == RentChargeStatus.PENDING }) }
+    }
+
+    @Test
+    fun `webhook matches by payment id metadata when the PaymentIntent id was never stored`() {
+        storedCardPayment(PaymentStatus.INITIATED, stripePaymentIntentId = null)
+
+        assertTrue(module.applyGatewayEvent(event(PaymentStatus.SUCCEEDED, paymentIntentId = "pi_new", paymentId = paymentId)))
+
+        assertEquals(PaymentStatus.SUCCEEDED, payments[paymentId]!!.status)
+        assertEquals("pi_new", payments[paymentId]!!.stripePaymentIntentId)
+    }
+
+    @Test
+    fun `webhook for an unknown payment is ignored`() {
+        assertFalse(module.applyGatewayEvent(event(PaymentStatus.SUCCEEDED, paymentIntentId = "pi_unknown")))
     }
 }

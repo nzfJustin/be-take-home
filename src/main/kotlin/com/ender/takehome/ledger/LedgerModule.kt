@@ -1,6 +1,7 @@
 package com.ender.takehome.ledger
 
 import com.ender.takehome.billing.CardModule
+import com.ender.takehome.billing.GatewayEvent
 import com.ender.takehome.billing.GatewayChargeRequest
 import com.ender.takehome.billing.PaymentGateway
 import com.ender.takehome.billing.PaymentGatewayException
@@ -147,6 +148,26 @@ class LedgerModule(
             result.paymentIntentId?.let { dataAccess.setStripePaymentIntentId(payment.id, it) }
             applyPaymentStatus(payment.id, result.status, result.failureReason)
             dataAccess.findPaymentById(payment.id)!!
+        }
+    }
+
+    /**
+     * Apply a verified Stripe webhook event. Payments are matched by PaymentIntent ID, falling back
+     * to our payment ID in the PaymentIntent metadata (covers charges whose synchronous response
+     * was lost). Events for unknown payments are logged and ignored.
+     *
+     * Returns true if a payment changed.
+     */
+    fun applyGatewayEvent(event: GatewayEvent): Boolean = transactionHelper.executeWithRetry {
+        val payment = dataAccess.findPaymentByStripePaymentIntentId(event.paymentIntentId)
+            ?: event.paymentId?.let { dataAccess.findPaymentById(it) }
+
+        if (payment == null) {
+            log.warn("Ignoring Stripe event ${event.eventId}: no payment for ${event.paymentIntentId}")
+            false
+        } else {
+            dataAccess.setStripePaymentIntentId(payment.id, event.paymentIntentId)
+            applyPaymentStatus(payment.id, event.status, event.failureReason)
         }
     }
 

@@ -22,6 +22,8 @@ class SecurityConfig(
         .sessionManagement { it.sessionCreationPolicy(SessionCreationPolicy.STATELESS) }
         .authorizeHttpRequests {
             it.requestMatchers("/api/auth/**").permitAll()
+                // Stripe can't send a JWT; the webhook authenticates via its Stripe-Signature header.
+                .requestMatchers("/api/stripe/webhook").permitAll()
                 .anyRequest().authenticated()
         }
         .addFilterBefore(jwtAuthenticationFilter, UsernamePasswordAuthenticationFilter::class.java)
