@@ -10,8 +10,6 @@ import org.springframework.test.context.DynamicPropertyRegistry
 import org.springframework.test.context.DynamicPropertySource
 import org.springframework.test.web.servlet.MockMvc
 import org.testcontainers.containers.GenericContainer
-import org.testcontainers.junit.jupiter.Container
-import org.testcontainers.junit.jupiter.Testcontainers
 import software.amazon.awssdk.auth.credentials.AwsBasicCredentials
 import software.amazon.awssdk.auth.credentials.StaticCredentialsProvider
 import software.amazon.awssdk.regions.Region
@@ -21,17 +19,21 @@ import java.net.URI
 
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
 @AutoConfigureMockMvc
-@Testcontainers
 @Import(FakePaymentGatewayConfig::class) // Integration tests never call real Stripe
 abstract class IntegrationTestBase {
 
     companion object {
         private const val QUEUE_NAME = "test-jobs"
 
-        @Container
+        /**
+         * Started once per JVM and shared by all integration test classes (singleton container pattern).
+         * Test classes share a cached Spring context, so a per-class container would leave that
+         * context pointing at a stopped container. Testcontainers' Ryuk removes it when the JVM exits.
+         */
         @JvmStatic
         val elasticMq: GenericContainer<*> = GenericContainer("softwaremill/elasticmq-native:1.6.6")
             .withExposedPorts(9324)
+            .apply { start() }
 
         @DynamicPropertySource
         @JvmStatic

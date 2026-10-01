@@ -20,6 +20,10 @@ repositories {
     mavenCentral()
 }
 
+// Spring Boot's dependency management pins Testcontainers (1.19.8 for Boot 3.3.5) and overrides the
+// BOM below unless this property is set. 1.21.4+ is required for Docker Engine 29 (minimum API 1.40).
+extra["testcontainers.version"] = "1.21.4"
+
 dependencyManagement {
     imports {
         mavenBom("software.amazon.awssdk:bom:2.28.19")
@@ -62,7 +66,7 @@ dependencies {
     testImplementation("org.springframework.boot:spring-boot-starter-test")
     testImplementation("org.springframework.security:spring-security-test")
     testImplementation("io.mockk:mockk:1.13.13")
-    testImplementation(platform("org.testcontainers:testcontainers-bom:1.20.4"))
+    testImplementation(platform("org.testcontainers:testcontainers-bom:1.21.4"))
     testImplementation("org.testcontainers:testcontainers")
     testImplementation("org.testcontainers:junit-jupiter")
     testImplementation("org.awaitility:awaitility:4.2.2")
