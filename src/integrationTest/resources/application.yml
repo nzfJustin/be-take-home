@@ -32,3 +32,7 @@ worker:
   poll-interval-ms: 500
   max-messages: 10
   visibility-timeout-seconds: 30
+
+stripe:
+  secret-key: sk_test_dummy
+  webhook-secret: whsec_dummy

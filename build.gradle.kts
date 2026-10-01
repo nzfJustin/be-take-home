@@ -55,6 +55,9 @@ dependencies {
     implementation("software.amazon.awssdk:s3")
     implementation("software.amazon.awssdk:sqs")
 
+    // Stripe
+    implementation("com.stripe:stripe-java:34.0.0")
+
     // Testing
     testImplementation("org.springframework.boot:spring-boot-starter-test")
     testImplementation("org.springframework.security:spring-security-test")
