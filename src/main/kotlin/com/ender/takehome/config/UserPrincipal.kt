@@ -23,5 +23,9 @@ data class UserPrincipal(
     companion object {
         fun current(): UserPrincipal =
             SecurityContextHolder.getContext().authentication.principal as UserPrincipal
+
+        /** Tenant ID of the current user. Only call from tenant-only endpoints. */
+        fun currentTenantId(): Long =
+            checkNotNull(current().tenantId) { "Current user is not a tenant" }
     }
 }

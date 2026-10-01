@@ -34,7 +34,15 @@ object TestFixtures {
         lastName: String = "Tenant",
         email: String = "test@tenant.com",
         phone: String? = "555-0100",
-    ) = Tenant(id = id, firstName = firstName, lastName = lastName, email = email, phone = phone)
+        stripeCustomerId: String? = null,
+    ) = Tenant(
+        id = id,
+        firstName = firstName,
+        lastName = lastName,
+        email = email,
+        phone = phone,
+        stripeCustomerId = stripeCustomerId,
+    )
 
     fun lease(
         id: Long = 1L,
@@ -66,5 +74,21 @@ object TestFixtures {
         amount = amount,
         dueDate = dueDate,
         status = status,
+    )
+
+    fun paymentCard(
+        id: Long = 1L,
+        tenantId: Long = 1L,
+        stripePaymentMethodId: String = "pm_test_1",
+        brand: String = "visa",
+        last4: String = "4242",
+    ) = PaymentCard(
+        id = id,
+        tenantId = tenantId,
+        stripePaymentMethodId = stripePaymentMethodId,
+        brand = brand,
+        last4 = last4,
+        expMonth = 12,
+        expYear = 2030,
     )
 }

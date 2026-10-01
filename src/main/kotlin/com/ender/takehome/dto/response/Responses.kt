@@ -99,3 +99,20 @@ data class PaymentResponse(
         )
     }
 }
+
+data class SetupIntentResponse(
+    val clientSecret: String,
+)
+
+data class PaymentCardResponse(
+    val id: Long,
+    val brand: String,
+    val last4: String,
+    val expMonth: Int,
+    val expYear: Int,
+    val createdAt: Instant,
+) {
+    companion object {
+        fun from(c: PaymentCard) = PaymentCardResponse(c.id, c.brand, c.last4, c.expMonth, c.expYear, c.createdAt)
+    }
+}

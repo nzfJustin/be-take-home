@@ -52,6 +52,17 @@ class TenantDataAccess(private val dsl: DSLContext) {
         return tenant
     }
 
+    /**
+     * Link [tenantId] to a Stripe customer unless it already has one.
+     * Returns false when another request linked a customer first.
+     */
+    fun setStripeCustomerIdIfAbsent(tenantId: Long, stripeCustomerId: String): Boolean =
+        dsl.update(TENANTS)
+            .set(TENANTS.STRIPE_CUSTOMER_ID, stripeCustomerId)
+            .where(TENANTS.ID.eq(tenantId))
+            .and(TENANTS.STRIPE_CUSTOMER_ID.isNull)
+            .execute() == 1
+
     private fun cursorCondition(startAfterId: Long?) =
         if (startAfterId != null) TENANTS.ID.gt(startAfterId) else DSL.noCondition()
 

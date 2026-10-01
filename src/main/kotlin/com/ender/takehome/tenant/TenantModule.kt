@@ -33,4 +33,13 @@ class TenantModule(private val dataAccess: TenantDataAccess) {
         )
         return dataAccess.save(updated)
     }
+
+    /**
+     * Link [id] to [stripeCustomerId] if it has no customer yet, and return the tenant as stored.
+     * If a concurrent request won, the returned tenant carries the winner's customer ID.
+     */
+    fun linkStripeCustomer(id: Long, stripeCustomerId: String): Tenant {
+        dataAccess.setStripeCustomerIdIfAbsent(id, stripeCustomerId)
+        return getById(id)
+    }
 }

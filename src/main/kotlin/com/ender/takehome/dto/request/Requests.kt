@@ -49,3 +49,7 @@ data class RecordPaymentRequest(
 data class GenerateRentChargesRequest(
     val dueDate: LocalDate? = null,
 )
+
+data class RegisterCardRequest(
+    @field:NotBlank val stripePaymentMethodId: String,
+)
