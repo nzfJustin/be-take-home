@@ -61,6 +61,7 @@ class TenantDataAccess(private val dsl: DSLContext) {
         lastName = lastName!!,
         email = email!!,
         phone = phone,
+        stripeCustomerId = stripeCustomerId,
         createdAt = createdAt!!.toInstant(ZoneOffset.UTC),
     )
 }

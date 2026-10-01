@@ -6,6 +6,7 @@ import com.ender.takehome.generated.tables.records.PaymentsRecord
 import com.ender.takehome.generated.tables.records.RentChargesRecord
 import com.ender.takehome.model.Payment
 import com.ender.takehome.model.PaymentMethod
+import com.ender.takehome.model.PaymentStatus
 import com.ender.takehome.model.RentCharge
 import com.ender.takehome.model.RentChargeStatus
 import org.jooq.DSLContext
@@ -86,8 +87,12 @@ class LedgerDataAccess(private val dsl: DSLContext) {
                 rentChargeId = payment.rentChargeId
                 amount = payment.amount
                 paymentMethod = payment.paymentMethod.name
+                status = payment.status.name
                 notes = payment.notes
                 recordedBy = payment.recordedBy
+                paymentCardId = payment.paymentCardId
+                stripePaymentIntentId = payment.stripePaymentIntentId
+                failureReason = payment.failureReason
             }
             record.store()
             return payment.copy(id = record.id!!)
@@ -119,8 +124,13 @@ class LedgerDataAccess(private val dsl: DSLContext) {
         rentChargeId = rentChargeId!!,
         amount = amount!!,
         paymentMethod = PaymentMethod.valueOf(paymentMethod!!),
+        status = PaymentStatus.valueOf(status!!),
         notes = notes,
         recordedBy = recordedBy!!,
+        paymentCardId = paymentCardId,
+        stripePaymentIntentId = stripePaymentIntentId,
+        failureReason = failureReason,
         createdAt = createdAt!!.toInstant(ZoneOffset.UTC),
+        updatedAt = updatedAt!!.toInstant(ZoneOffset.UTC),
     )
 }
