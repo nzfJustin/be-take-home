@@ -8,5 +8,6 @@ data class Tenant(
     val lastName: String,
     val email: String,
     val phone: String? = null,
+    val stripeCustomerId: String? = null,
     val createdAt: Instant = Instant.now(),
 )

@@ -1,5 +1,7 @@
 package com.ender.takehome.ledger
 
+import com.ender.takehome.config.UserPrincipal
+import com.ender.takehome.dto.request.CardPaymentRequest
 import com.ender.takehome.dto.request.GenerateRentChargesRequest
 import com.ender.takehome.dto.request.RecordPaymentRequest
 import com.ender.takehome.dto.response.CursorPage
@@ -49,6 +51,16 @@ class LedgerApi(
             ledgerModule.getChargesByLeaseId(leaseId, startAfterId, limit)
         }
         return CursorPage(page.content.map { RentChargeResponse.from(it) }, page.hasMore)
+    }
+
+    @PostMapping("/api/rent-charges/{id}/card-payments")
+    @ResponseStatus(HttpStatus.CREATED)
+    @PreAuthorize("hasRole('TENANT')")
+    fun payWithCard(@PathVariable id: Long, @Valid @RequestBody request: CardPaymentRequest): PaymentResponse {
+        val principal = UserPrincipal.current()
+        return PaymentResponse.from(
+            ledgerModule.payWithCard(UserPrincipal.currentTenantId(), id, request.cardId, principal.email)
+        )
     }
 
     // --- Rent Charge Generation ---
