@@ -13,6 +13,7 @@ import org.jooq.DSLContext
 import org.jooq.impl.DSL
 import org.springframework.stereotype.Component
 import java.time.LocalDate
+import java.time.LocalDateTime
 import java.time.ZoneOffset
 
 @Component
@@ -44,6 +45,14 @@ class LedgerDataAccess(private val dsl: DSLContext) {
             .limit(limit)
             .fetch()
             .map { it.toModel() }
+
+    /** Locks the charge row until the transaction ends, serializing payment attempts on it. */
+    fun findChargeByIdForUpdate(id: Long): RentCharge? =
+        dsl.selectFrom(RENT_CHARGES)
+            .where(RENT_CHARGES.ID.eq(id))
+            .forUpdate()
+            .fetchOne()
+            ?.toModel()
 
     fun findChargeByLeaseIdAndDueDate(leaseId: Long, dueDate: LocalDate): RentCharge? =
         dsl.selectFrom(RENT_CHARGES)
@@ -80,6 +89,46 @@ class LedgerDataAccess(private val dsl: DSLContext) {
             .limit(limit)
             .fetch()
             .map { it.toModel() }
+
+    fun findPaymentById(id: Long): Payment? =
+        dsl.selectFrom(PAYMENTS)
+            .where(PAYMENTS.ID.eq(id))
+            .fetchOne()
+            ?.toModel()
+
+    fun findPaymentByStripePaymentIntentId(stripePaymentIntentId: String): Payment? =
+        dsl.selectFrom(PAYMENTS)
+            .where(PAYMENTS.STRIPE_PAYMENT_INTENT_ID.eq(stripePaymentIntentId))
+            .fetchOne()
+            ?.toModel()
+
+    fun existsActivePaymentForCharge(rentChargeId: Long): Boolean =
+        dsl.fetchExists(
+            dsl.selectFrom(PAYMENTS)
+                .where(PAYMENTS.RENT_CHARGE_ID.eq(rentChargeId))
+                .and(PAYMENTS.STATUS.`in`(PaymentStatus.ACTIVE.map { it.name }))
+        )
+
+    fun setStripePaymentIntentId(paymentId: Long, stripePaymentIntentId: String) {
+        dsl.update(PAYMENTS)
+            .set(PAYMENTS.STRIPE_PAYMENT_INTENT_ID, stripePaymentIntentId)
+            .where(PAYMENTS.ID.eq(paymentId))
+            .and(PAYMENTS.STRIPE_PAYMENT_INTENT_ID.isNull)
+            .execute()
+    }
+
+    /**
+     * Compare-and-set the payment status. Returns false if the payment is no longer in [from]
+     * (another request or webhook already moved it), so callers never apply a transition twice.
+     */
+    fun transitionPaymentStatus(paymentId: Long, from: PaymentStatus, to: PaymentStatus, failureReason: String?): Boolean =
+        dsl.update(PAYMENTS)
+            .set(PAYMENTS.STATUS, to.name)
+            .set(PAYMENTS.FAILURE_REASON, failureReason)
+            .set(PAYMENTS.UPDATED_AT, LocalDateTime.now(ZoneOffset.UTC))
+            .where(PAYMENTS.ID.eq(paymentId))
+            .and(PAYMENTS.STATUS.eq(from.name))
+            .execute() == 1
 
     fun savePayment(payment: Payment): Payment {
         if (payment.id == 0L) {

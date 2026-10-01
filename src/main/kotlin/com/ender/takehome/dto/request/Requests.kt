@@ -53,3 +53,7 @@ data class GenerateRentChargesRequest(
 data class RegisterCardRequest(
     @field:NotBlank val stripePaymentMethodId: String,
 )
+
+data class CardPaymentRequest(
+    @field:NotNull val cardId: Long,
+)

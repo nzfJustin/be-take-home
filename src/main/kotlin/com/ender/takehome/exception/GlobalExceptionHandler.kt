@@ -27,6 +27,12 @@ class GlobalExceptionHandler {
             ErrorResponse(404, "Not Found", ex.message ?: "Resource not found")
         )
 
+    @ExceptionHandler(ConflictException::class)
+    fun handleConflict(ex: ConflictException): ResponseEntity<ErrorResponse> =
+        ResponseEntity.status(HttpStatus.CONFLICT).body(
+            ErrorResponse(409, "Conflict", ex.message ?: "Conflict")
+        )
+
     @ExceptionHandler(MethodArgumentNotValidException::class)
     fun handleValidation(ex: MethodArgumentNotValidException): ResponseEntity<ErrorResponse> {
         val message = ex.bindingResult.fieldErrors.joinToString("; ") {
