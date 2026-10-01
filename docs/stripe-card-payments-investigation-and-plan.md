@@ -446,3 +446,305 @@ CREATE INDEX idx_payments_charge_status ON payments (rent_charge_id, status);
   - Multiple currencies.
   - Convenience fees for card payments.
 - **Existing issues not fixed here:** the authorization holes on `GET /api/rent-charges` and `GET /api/leases/{id}`, and the status-filter bug. Recommended as small separate commits.
+
+---
+---
+
+# Manual Testing Guide
+
+Testing has three parts: automated tests, a manual run against Stripe test mode, and some negative cases. Run everything from the repo root on branch `feature/stripe-card-payments`.
+
+## 0. Prerequisites (one-time)
+
+```bash
+git checkout feature/stripe-card-payments
+
+# JDK 17: the project's Gradle setup requires it
+brew install --cask temurin@17
+
+# Docker, for MySQL and LocalStack (and for the integration tests)
+brew install --cask docker        # or colima: brew install colima docker && colima start
+
+# Stripe CLI, plus a free Stripe account in test mode
+brew install stripe/stripe-cli/stripe
+stripe login
+
+# jq, used below to extract values from JSON responses
+brew install jq
+```
+
+## 1. Automated tests
+
+```bash
+./gradlew test               # unit + controller tests (47 tests)
+./gradlew integrationTest    # end-to-end with a fake Stripe; needs Docker running
+```
+
+Open `build/reports/tests/test/index.html` and `build/reports/tests/integrationTest/index.html` for the reports.
+
+## 2. Manual end-to-end test against Stripe test mode
+
+**Terminal 1: forward webhooks**
+```bash
+stripe listen --forward-to localhost:8080/api/stripe/webhook
+# Copy the "whsec_..." secret it prints. Leave this running; it shows each event and our HTTP response.
+```
+
+**Terminal 2: start the app**
+```bash
+docker-compose up -d          # if you ran the app before, it will apply V4 on startup
+export STRIPE_SECRET_KEY=sk_test_...      # Dashboard → Developers → API keys (test mode)
+export STRIPE_WEBHOOK_SECRET=whsec_...    # from Terminal 1
+./gradlew bootRun
+```
+
+**Terminal 3: run the flow as Alice, who owns rent charge 1 ($2500, PENDING)**
+```bash
+login() { curl -s -X POST localhost:8080/api/auth/login -H 'Content-Type: application/json' \
+  -d "{\"email\":\"$1\",\"password\":\"password\"}" | jq -r .token; }
+ALICE=$(login alice.johnson@email.com)
+
+# 1. Start saving a card
+SECRET=$(curl -s -X POST localhost:8080/api/cards/setup-intent -H "Authorization: Bearer $ALICE" | jq -r .clientSecret)
+SETI=${SECRET%%_secret_*}; echo $SETI
+
+# 2. Do what Stripe.js would do in a browser: confirm the SetupIntent with Stripe's test card
+PM=$(stripe setup_intents confirm $SETI --payment-method=pm_card_visa | jq -r .payment_method); echo $PM
+
+# 3. Register the card
+CARD=$(curl -s -X POST localhost:8080/api/cards -H "Authorization: Bearer $ALICE" \
+  -H 'Content-Type: application/json' -d "{\"stripePaymentMethodId\":\"$PM\"}" | tee /dev/stderr | jq -r .id)
+curl -s localhost:8080/api/cards -H "Authorization: Bearer $ALICE" | jq
+
+# 4. Pay rent charge 1
+curl -s -X POST localhost:8080/api/rent-charges/1/card-payments -H "Authorization: Bearer $ALICE" \
+  -H 'Content-Type: application/json' -d "{\"cardId\":$CARD}" | jq
+#   expect: 201, "status": "SUCCEEDED", "paymentMethod": "CARD"
+
+curl -s localhost:8080/api/rent-charges/1 -H "Authorization: Bearer $ALICE" | jq .status   # "PAID"
+```
+
+**What to check:**
+- **Terminal 1:** `payment_intent.succeeded` arrives with `[200]`. It changes nothing because the payment is already `SUCCEEDED`.
+- **Stripe dashboard → Payments:** shows a $2,500.00 payment, with `payment_id` in its metadata.
+
+## 3. Refund (webhook-driven lifecycle)
+
+```bash
+PI=$(docker-compose exec -T mysql mysql -uroot -ppassword takehome -N \
+  -e "select stripe_payment_intent_id from payments where payment_method='CARD' order by id desc limit 1" 2>/dev/null)
+stripe refunds create --payment-intent=$PI
+```
+
+**Expected:**
+- **Terminal 1:** `charge.refunded` arrives with `[200]`.
+- **Rent charge:** back to `"PENDING"`:
+  ```bash
+  curl -s localhost:8080/api/rent-charges/1 -H "Authorization: Bearer $ALICE" | jq .status
+  ```
+- **Payment:** now `REFUNDED`, as seen by the property manager:
+  ```bash
+  PM_TOKEN=$(login admin@greenfieldproperties.com)
+  curl -s "localhost:8080/api/payments?rentChargeId=1" -H "Authorization: Bearer $PM_TOKEN" | jq '.content[] | {id, paymentMethod, status}'
+  ```
+
+## 4. Negative cases
+
+```bash
+# Pay twice → 409. Run this after section 2 and before section 3, or pay again after the refund and then retry.
+curl -s -o /dev/null -w "%{http_code}\n" -X POST localhost:8080/api/rent-charges/1/card-payments \
+  -H "Authorization: Bearer $ALICE" -H 'Content-Type: application/json' -d "{\"cardId\":$CARD}"
+
+# Bob saves a card that is declined when charged (Stripe test card pm_card_chargeDeclined)
+BOB=$(login bob.smith@email.com)
+SECRET=$(curl -s -X POST localhost:8080/api/cards/setup-intent -H "Authorization: Bearer $BOB" | jq -r .clientSecret)
+BPM=$(stripe setup_intents confirm ${SECRET%%_secret_*} --payment-method=pm_card_chargeDeclined | jq -r .payment_method)
+BCARD=$(curl -s -X POST localhost:8080/api/cards -H "Authorization: Bearer $BOB" \
+  -H 'Content-Type: application/json' -d "{\"stripePaymentMethodId\":\"$BPM\"}" | jq -r .id)
+
+# Bob pays Alice's charge → 404
+curl -s -o /dev/null -w "%{http_code}\n" -X POST localhost:8080/api/rent-charges/1/card-payments \
+  -H "Authorization: Bearer $BOB" -H 'Content-Type: application/json' -d "{\"cardId\":$BCARD}"
+
+# Bob pays his own charge 3 with the declining card → 201 with "status":"FAILED"; charge 3 stays PENDING
+curl -s -X POST localhost:8080/api/rent-charges/3/card-payments -H "Authorization: Bearer $BOB" \
+  -H 'Content-Type: application/json' -d "{\"cardId\":$BCARD}" | jq '{status, failureReason}'
+
+# Alice registers Bob's payment method → 400
+curl -s -X POST localhost:8080/api/cards -H "Authorization: Bearer $ALICE" \
+  -H 'Content-Type: application/json' -d "{\"stripePaymentMethodId\":\"$BPM\"}" | jq
+
+# Alice uses Bob's card → 404
+curl -s -o /dev/null -w "%{http_code}\n" -X POST localhost:8080/api/rent-charges/1/card-payments \
+  -H "Authorization: Bearer $ALICE" -H 'Content-Type: application/json' -d "{\"cardId\":$BCARD}"
+
+# A property manager calls a card endpoint → 403
+curl -s -o /dev/null -w "%{http_code}\n" localhost:8080/api/cards -H "Authorization: Bearer $PM_TOKEN"
+
+# Forged webhook → 400
+curl -s -o /dev/null -w "%{http_code}\n" -X POST localhost:8080/api/stripe/webhook \
+  -H 'Stripe-Signature: t=1,v1=bad' -d '{}'
+```
+
+## 5. Check the database directly (optional)
+
+```bash
+docker-compose exec mysql mysql -uroot -ppassword takehome -e "
+  select id, rent_charge_id, payment_method, status, stripe_payment_intent_id, failure_reason from payments;
+  select id, tenant_id, brand, last4 from payment_cards;
+  select id, stripe_customer_id from tenants;
+  select id, status from rent_charges;"
+```
+
+## Tips
+
+- **Start over with a clean database:** `docker-compose down -v && docker-compose up -d`, then restart the app. The Stripe customers in your test account remain, which is harmless.
+- **Webhooks return 400 "Invalid Stripe signature":** `STRIPE_WEBHOOK_SECRET` doesn't match the secret `stripe listen` printed. Export it and restart `bootRun`.
+- **The app returns 502:** usually a missing or wrong `STRIPE_SECRET_KEY`. The app log has the Stripe error.
+
+---
+---
+
+# Step-by-Step curl Walkthrough
+
+This is a detailed version of the manual test, with what to expect at each step. You'll use three terminal windows: one for Stripe webhooks, one for the app, and one for the `curl` commands.
+
+> **Note:** newer Docker installs only have `docker compose` (with a space). The older `docker-compose` with a hyphen may not exist. Wherever this file says `docker-compose`, type `docker compose` instead.
+
+## Prerequisite: infrastructure is running
+
+```bash
+docker compose up -d
+docker compose ps        # wait until mysql shows "(healthy)"
+```
+
+## Step 0: Make sure the app has your Stripe keys
+
+The card endpoints call Stripe, so the app needs your **test-mode** keys **when it starts**. If you started `bootRun` without them, stop it (Ctrl+C) and follow this.
+
+1. **Get your secret key:** in the Stripe dashboard, make sure **Test mode** is on, then go to **Developers → API keys** and copy the **Secret key** (`sk_test_...`).
+2. **Terminal 1:** start webhook forwarding and leave it running.
+   ```bash
+   stripe login        # first time only; opens the browser
+   stripe listen --forward-to localhost:8080/api/stripe/webhook
+   ```
+   It prints `Ready! Your webhook signing secret is whsec_...`. Copy that secret.
+3. **Terminal 2:** start the app with both keys.
+   ```bash
+   export STRIPE_SECRET_KEY=sk_test_...
+   export STRIPE_WEBHOOK_SECRET=whsec_...
+   ./gradlew bootRun
+   ```
+   Wait for `Started TakeHomeApplicationKt`.
+
+Everything below runs in **Terminal 3**. Variables like `$ALICE` only exist in the window where you set them, so keep using that same window.
+
+## Step 1: Smoke test (no Stripe yet)
+
+```bash
+login() { curl -s -X POST localhost:8080/api/auth/login -H 'Content-Type: application/json' \
+  -d "{\"email\":\"$1\",\"password\":\"password\"}" | jq -r .token; }
+
+ALICE=$(login alice.johnson@email.com)
+echo $ALICE                                   # should print a long eyJ... token
+
+curl -s localhost:8080/api/rent-charges/1 -H "Authorization: Bearer $ALICE" | jq
+```
+
+**Expected:** charge 1 for $2500 with `"status": "PENDING"`. This is Alice's seeded charge, and you'll pay it below.
+
+## Step 2: Save a card
+
+A real app collects the card in the browser with Stripe.js. Here the Stripe CLI plays that part.
+
+```bash
+# 2a. Ask our API to start a card setup
+SECRET=$(curl -s -X POST localhost:8080/api/cards/setup-intent -H "Authorization: Bearer $ALICE" | jq -r .clientSecret)
+echo $SECRET                                  # seti_..._secret_...
+
+# 2b. The SetupIntent ID is the part of the client secret before "_secret_"
+SETI=${SECRET%%_secret_*}
+echo $SETI                                    # seti_...
+
+# 2c. Act as the browser: confirm the setup with Stripe's test Visa card
+PM=$(stripe setup_intents confirm $SETI --payment-method=pm_card_visa | jq -r .payment_method)
+echo $PM                                      # pm_... (a real saved card on Alice's Stripe customer)
+
+# 2d. Register the saved card with our API
+curl -s -X POST localhost:8080/api/cards -H "Authorization: Bearer $ALICE" \
+  -H 'Content-Type: application/json' -d "{\"stripePaymentMethodId\":\"$PM\"}" | jq
+```
+
+**Expected from 2d:** `{"id": 1, "brand": "visa", "last4": "4242", ...}`. Save the card's ID:
+
+```bash
+CARD=1                                        # use the "id" from the response above
+curl -s localhost:8080/api/cards -H "Authorization: Bearer $ALICE" | jq    # lists Alice's cards
+```
+
+## Step 3: Pay rent with the card
+
+```bash
+curl -s -X POST localhost:8080/api/rent-charges/1/card-payments -H "Authorization: Bearer $ALICE" \
+  -H 'Content-Type: application/json' -d "{\"cardId\":$CARD}" | jq
+```
+
+**Expected:** `"status": "SUCCEEDED"`, `"paymentMethod": "CARD"`, `"amount": 2500.00`.
+
+**Verify:**
+- **Charge status:**
+  ```bash
+  curl -s localhost:8080/api/rent-charges/1 -H "Authorization: Bearer $ALICE" | jq .status   # "PAID"
+  ```
+- **Terminal 1:** shows `payment_intent.succeeded` with `[200]`. That's the webhook arriving; it's a harmless duplicate because the payment already succeeded.
+- **Stripe dashboard → Payments:** a $2,500.00 payment appears.
+
+**Double payment is blocked:** running the same pay command again should now print `409`:
+```bash
+curl -s -o /dev/null -w "%{http_code}\n" -X POST localhost:8080/api/rent-charges/1/card-payments \
+  -H "Authorization: Bearer $ALICE" -H 'Content-Type: application/json' -d "{\"cardId\":$CARD}"
+```
+
+## Step 4: Refund it (tests the webhook lifecycle)
+
+```bash
+# Look up the Stripe PaymentIntent ID in our database
+PI=$(docker compose exec -T mysql mysql -uroot -ppassword takehome -N \
+  -e "select stripe_payment_intent_id from payments where payment_method='CARD' order by id desc limit 1" 2>/dev/null)
+echo $PI                                      # pi_...
+
+stripe refunds create --payment-intent=$PI
+```
+
+**Expected:**
+- **Terminal 1:** `charge.refunded` arrives with `[200]`.
+- **Rent charge:** back to `"PENDING"`:
+  ```bash
+  curl -s localhost:8080/api/rent-charges/1 -H "Authorization: Bearer $ALICE" | jq .status
+  ```
+- **Payment:** now `REFUNDED`, as the property manager sees it:
+  ```bash
+  PM_TOKEN=$(login admin@greenfieldproperties.com)
+  curl -s "localhost:8080/api/payments?rentChargeId=1" -H "Authorization: Bearer $PM_TOKEN" \
+    | jq '.content[] | {id, paymentMethod, status}'
+  ```
+
+## Step 5: Negative cases (optional)
+
+Run the commands in **Manual Testing Guide → 4. Negative cases** above: a declined card, Bob paying Alice's charge, forged webhooks, and so on. Use `docker compose` with a space wherever that section says `docker-compose`.
+
+## If something goes wrong
+
+| Symptom | Cause / fix |
+|---|---|
+| `zsh: command not found: docker-compose` | Use `docker compose` (with a space) |
+| `bootRun` fails with "Communications link failure" / "Connection refused" | MySQL isn't running. Run `docker compose up -d`, wait for "(healthy)", then rerun. |
+| `jq: command not found` | `brew install jq` |
+| `stripe: command not found` | `brew install stripe/stripe-cli/stripe`, then `stripe login` |
+| `$ALICE` is empty or `null` | The app isn't running, or the `login` function wasn't defined in this window |
+| setup-intent returns **502** | `STRIPE_SECRET_KEY` is missing or wrong. The app log in Terminal 2 has the Stripe error. Export it and restart `bootRun`. |
+| `stripe setup_intents confirm` says "No such setupintent" | The Stripe CLI is logged into a different Stripe account than your `sk_test_` key. Run `stripe login` again with the same account. |
+| Registering the card returns **400** "does not belong to this tenant" | The `pm_...` came from a different SetupIntent or customer. Redo step 2 in order. |
+| Terminal 1 shows `[400]` for events | `STRIPE_WEBHOOK_SECRET` doesn't match what `stripe listen` printed. Export it and restart `bootRun`. |
+| Paying returns **409** on the first try | Charge 1 was already paid in an earlier run. Refund it (step 4), or reset with `docker compose down -v && docker compose up -d` and restart the app. |
+| A command returns **401/403** | The token expired (24h) or is the wrong role. Run `login` again. |

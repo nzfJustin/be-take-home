@@ -350,8 +350,19 @@ This feature was built with **Claude Code** (an AI coding agent) in three prompt
 1. **Investigation:** analyze the codebase against `TASK.md` and identify reusable APIs, constraints and existing issues.
 2. **Plan:** propose a minimal end-to-end design (data model, lifecycle, endpoints, tests, commit sequence).
 3. **Implementation:** implement the plan commit by commit, running the tests at each step.
+4. **Verification:** run the app locally against MySQL and Stripe test mode, and debug the environment issues that came up.
 
-The investigation and plan are kept verbatim in [`docs/stripe-card-payments-investigation-and-plan.md`](docs/stripe-card-payments-investigation-and-plan.md).
+The intermediate artifacts are in [`docs/`](docs/), kept as they were produced:
+
+- [`docs/stripe-card-payments-investigation-and-plan.md`](docs/stripe-card-payments-investigation-and-plan.md)
+  - the codebase investigation
+  - the implementation plan
+  - a manual testing guide
+  - a step-by-step `curl` walkthrough
+- [`docs/debugging.md`](docs/debugging.md)
+  - the problems hit while running and testing locally (Docker, Testcontainers, MySQL, Stripe keys, ports), with their causes and fixes
+
+The testing guide in the investigation doc uses the older `docker-compose` command in places. On newer Docker installs, type `docker compose` instead.
 
 **Where the implementation differs from that plan:**
 - `OVERDUE` charges are payable too.
